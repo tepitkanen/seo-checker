@@ -38,10 +38,14 @@ It respects `robots.txt`, waits between requests (`--delay`, default 1 s) and st
 Requires Python 3.9 or newer.
 
 ```
+git clone https://github.com/tepitkanen/seo-checker.git
+cd seo-checker
 python -m venv .venv
 .venv\Scripts\activate        # macOS/Linux: source .venv/bin/activate
 pip install -r requirements.txt
 ```
+
+Run the commands (and later `python seo_checker.py ...`) inside the `seo-checker` folder.
 
 ## Usage
 
