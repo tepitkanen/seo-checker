@@ -232,7 +232,7 @@ def test_corrupt_deflate_body_in_gzip_sitemap_does_not_crash(make_site):
 
 
 def test_gzip_sitemap_over_size_limit_is_skipped(make_site, monkeypatch):
-    monkeypatch.setattr("seo_checker.MAX_SITEMAP_BYTES", 1000)
+    monkeypatch.setattr("checker.crawl.MAX_SITEMAP_BYTES", 1000)
     big = sitemap(*[f"{BASE}/p{i}" for i in range(100)])  # well over 1000 bytes unpacked
     make_site({
         f"{BASE}/robots.txt": FakeResponse(f"Sitemap: {BASE}/big.xml.gz\n"),
