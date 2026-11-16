@@ -17,7 +17,7 @@ from test_crawler import BASE, FakeResponse, sitemap, sitemap_index, make_site  
 
 # ---------- decode_html ----------
 
-def make_resp(body_bytes, content_type: str | None = "text/html"):
+def make_resp(body_bytes, content_type="text/html"):  # content_type=None: no Content-Type header
     resp = FakeResponse("WRONG-requests-text", content_type=content_type or "", content=body_bytes)
     if content_type is None:
         resp.headers = {}
