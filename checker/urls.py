@@ -1,7 +1,9 @@
 """URL helpers: matching hosts and pages across URL variants, and printing URLs safely."""
 
 import re
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit
+
+from requests.utils import requote_uri
 
 # Links to these file types are not HTML pages, so they are not checked.
 NON_PAGE_EXTENSIONS = (".pdf", ".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".zip",
@@ -19,6 +21,10 @@ def site_host(url):
     """
     parts = urlparse(url)
     host = parts.hostname or ""  # lowercased, without user info, port or IPv6 brackets
+    try:
+        host = host.encode("idna").decode("ascii")  # requests sends bücher.fi as xn--bcher-kva.fi
+    except UnicodeError:
+        pass
     if ":" in host:
         host = f"[{host}]"
     port = parts.port
@@ -46,3 +52,30 @@ def link_key(url):
             path = path[:-len(index)]
     key = site_host(url) + path.rstrip("/")
     return f"{key}?{parts.query}" if parts.query else key
+
+
+def same_address(a, b):
+    """True if two URLs are the same address once escaping is normalized.
+
+    requests percent-encodes non-ASCII paths and punycodes the host (".../kengät" becomes
+    ".../keng%C3%A4t"), so a plain string comparison would report a redirect that didn't happen.
+    A trailing slash and the host's case are ignored.
+    """
+    def norm(url):
+        try:
+            parts = urlsplit(url)
+            return parts._replace(netloc=site_host_raw(parts.netloc), path=requote_uri(parts.path),
+                                  query=requote_uri(parts.query), fragment="").geturl().rstrip("/")
+        except ValueError:
+            return url.rstrip("/")
+    return norm(a) == norm(b)
+
+
+def site_host_raw(netloc):
+    """Lowercase a netloc and punycode a non-ASCII host, keeping user info and port."""
+    userinfo, at, hostport = netloc.rpartition("@")
+    try:
+        hostport = hostport.lower().encode("idna").decode("ascii")
+    except UnicodeError:
+        hostport = hostport.lower()
+    return userinfo + at + hostport

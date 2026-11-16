@@ -20,6 +20,8 @@ MAX_SITEMAP_BYTES = 50 * 1024 * 1024  # sitemaps.org limit for an uncompressed s
 MAX_RESPONSE_BYTES = 50 * 1024 * 1024
 DTD_RE = re.compile(r"<!\s*(DOCTYPE|ENTITY)", re.IGNORECASE)
 # robots.txt user agents of AI answer engines and training crawlers (GEO).
+# RobotFileParser keeps only the part before "/", so the full USER_AGENT would be matched as "mozilla".
+ROBOTS_AGENT = "seo-checker"
 AI_CRAWLERS = ("GPTBot", "OAI-SearchBot", "ClaudeBot", "PerplexityBot", "Google-Extended")
 
 
@@ -117,7 +119,7 @@ class Crawler:
             return None
 
     def allowed(self, url):
-        return self.robots.can_fetch(USER_AGENT, url)
+        return self.robots.can_fetch(ROBOTS_AGENT, url)
 
     def robots_sitemaps(self):
         """Return same-site sitemap URLs listed as 'Sitemap:' lines in robots.txt."""
@@ -226,7 +228,7 @@ class Crawler:
 
     def has_llms_txt(self):
         resp = self.get(self.base + "/llms.txt")
-        return resp is not None and resp.ok and "text/html" not in resp.headers.get("Content-Type", "")
+        return resp is not None and resp.ok and "text/html" not in resp.headers.get("Content-Type", "").lower()
 
 
 def find_broken_links(page_links, known_status, crawler, max_links):
