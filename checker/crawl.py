@@ -130,7 +130,10 @@ class Crawler:
         return urls[:max_pages]
 
     def _same_site(self, url):
-        return site_host(url) == site_host(self.base)
+        try:
+            return site_host(url) == site_host(self.base)
+        except ValueError:  # malformed URL in a sitemap, e.g. "http://[x"
+            return False
 
     def _get_sitemap(self, url):
         """GET a sitemap; return None on failure or if a redirect left the site being checked."""
