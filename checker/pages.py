@@ -6,7 +6,7 @@ from urllib.parse import urljoin, urlparse, urldefrag
 
 from bs4 import BeautifulSoup
 
-from checker.urls import NON_PAGE_EXTENSIONS, link_key, site_host
+from checker.urls import NON_PAGE_EXTENSIONS, link_key, same_address, site_host
 
 TITLE_MIN, TITLE_MAX = 30, 60
 DESC_MIN, DESC_MAX = 70, 160
@@ -31,7 +31,7 @@ def check_page(html, url, status=200, final_url=None, info=None):
     issues = result["issues"]
     # A sitemap should list final addresses; a redirect wastes crawl budget and slows users.
     # Trailing slashes are ignored because requests adds one to bare domains ("example.fi/").
-    if final_url and final_url.rstrip("/") != url.rstrip("/"):
+    if final_url and not same_address(final_url, url):
         result["redirects_to"] = final_url
         issues.append("Redirects to another URL")
     if status != 200:
@@ -81,7 +81,7 @@ def check_page(html, url, status=200, final_url=None, info=None):
     if empty_alt:
         issues.append("Images with empty alt")
 
-    if "noindex" in get_attr(find_meta(soup, "robots"), "content").lower():
+    if re.search(r"\b(noindex|none)\b", get_attr(find_meta(soup, "robots"), "content").lower()):
         result["noindex"] = True
         issues.append("Noindex")
     # The same rule can be sent as an HTTP header, e.g. "X-Robots-Tag: noindex" or "googlebot: noindex".
@@ -97,7 +97,7 @@ def check_page(html, url, status=200, final_url=None, info=None):
             result["canonical"] = urljoin(page_url, canonical_href)
         except ValueError:  # malformed href such as "http://[x"
             result["canonical"] = canonical_href
-        if result["canonical"].rstrip("/") != page_url.rstrip("/"):
+        if not same_address(result["canonical"], page_url):
             issues.append("Canonical points elsewhere")
     else:
         issues.append("Missing canonical")
@@ -153,7 +153,7 @@ def find_schema_types(soup):
 def internal_links(html, base_url):
     """Return unique same-host links found in the HTML, without fragments."""
     host = site_host(base_url)
-    links = []
+    links, seen = [], set()
     for a in BeautifulSoup(html, "html.parser").select("a[href]"):
         try:
             link = urldefrag(urljoin(base_url, get_attr(a, "href")))[0]
@@ -161,7 +161,8 @@ def internal_links(html, base_url):
                 continue
         except ValueError:  # malformed href such as "http://[x" raises "Invalid IPv6 URL"
             continue
-        if link not in links:
+        if link not in seen:
+            seen.add(link)
             links.append(link)
     return links
 
