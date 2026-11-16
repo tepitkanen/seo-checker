@@ -190,12 +190,17 @@ def site_host(url):
 
 
 def link_key(url):
-    """Key for matching the same page across http/https, www/non-www and a trailing slash.
+    """Key for matching the same page across http/https, www/non-www, a trailing slash
+    and a directory's index file (/a/index.html is the same page as /a/).
 
-    link_key("http://www.example.fi/a/?x=1") == link_key("https://example.fi/a?x=1")
+    link_key("http://www.example.fi/a/index.html?x=1") == link_key("https://example.fi/a?x=1")
     """
     parts = urlparse(url)
-    key = site_host(url) + parts.path.rstrip("/")
+    path = parts.path
+    for index in ("/index.html", "/index.htm"):
+        if path.lower().endswith(index):
+            path = path[:-len(index)]
+    key = site_host(url) + path.rstrip("/")
     return f"{key}?{parts.query}" if parts.query else key
 
 
@@ -249,7 +254,13 @@ class Crawler:
                 return urls[:max_pages]
         resp = self.get(self.base + "/")
         links = internal_links(resp.text, self.base + "/") if resp is not None and resp.ok else []
-        return ([self.base + "/"] + [u for u in links if u.rstrip("/") != self.base])[:max_pages]
+        # Skip other addresses of a page already listed, e.g. /index.html for the homepage.
+        urls, seen = [], set()
+        for u in [self.base + "/"] + links:
+            if link_key(u) not in seen:
+                seen.add(link_key(u))
+                urls.append(u)
+        return urls[:max_pages]
 
     def _same_site(self, url):
         return site_host(url) == site_host(self.base)
