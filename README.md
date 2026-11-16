@@ -19,8 +19,12 @@ For each page:
 | H1 | Missing, or more than one |
 | Images | `<img>` without `alt` text (count) |
 | Robots meta | `noindex` |
+| `X-Robots-Tag` header | `noindex` or `none` sent as an HTTP header (e.g. `noindex` or `googlebot: noindex`) |
 | Canonical | Missing, or points to another URL |
 | Structured data (GEO) | No JSON-LD / schema.org data; found `@type`s are listed |
+| Response time | Server response took over 1000 ms |
+| Page size | HTML over 500 KB (images, CSS and scripts not included) |
+| Broken internal links | With `--check-links`: links on the page to same-site URLs that return 4xx/5xx or fail |
 
 For the whole site, it checks whether `/llms.txt` exists. Structured data and `llms.txt` help
 AI answer engines (ChatGPT, Perplexity, Google AI Overviews) understand and cite a site.
@@ -60,6 +64,8 @@ python seo_checker.py https://example.fi --max 50 --csv report.csv
 | `--csv-delimiter` | `comma` | CSV column separator: `comma` or `semicolon` (use `semicolon` for Finnish and other European Excel versions) |
 | `--xlsx` | none | Write the same report as an Excel file (opens correctly in any Excel language) |
 | `--delay` | 1.0 | Seconds to wait between requests |
+| `--check-links` | off | Also check internal links on each page for broken targets. Pages already crawled are not requested again; links blocked by `robots.txt` are skipped |
+| `--max-links` | 100 | With `--check-links`: maximum number of extra link URLs to request (each waits `--delay`) |
 
 ### Example output
 
@@ -86,7 +92,8 @@ CSV report written to report_2026-11-15_143012.csv
 A timestamp is added to report file names so earlier reports are never overwritten:
 `--csv report.csv` writes e.g. `report_2026-11-15_143012.csv`. `--csv` and `--xlsx` can be used
 together and share the same timestamp. The report has one row per page: URL, status, title and its length, description length, H1 count,
-images missing alt, noindex, canonical, redirect target, schema types and the list of issues.
+images missing alt, noindex, canonical, redirect target, schema types, response time (ms), page size
+(KB), broken links and the list of issues.
 
 ## Tests
 
@@ -100,4 +107,3 @@ so the tests run offline against HTML samples.
 ## Possible next steps
 
 - Suggest a meta description for pages missing one using a language model.
-- Check `X-Robots-Tag` headers and broken internal links.
