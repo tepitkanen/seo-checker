@@ -114,6 +114,11 @@ def build_site(port):
     pages["/from-child-sitemap"] = page(
         base, "/from-child-sitemap", title="Page listed only in a gzipped child sitemap",
         desc="Found through the sitemap index and its gzipped child sitemap, so it must be in the report.")
+    # Listed only in a sitemap inside a nested sitemap index -> must be crawled; the nested
+    # index's own entry (/grandchild.xml) is a sitemap and must not be crawled as a page.
+    pages["/from-nested-index"] = page(
+        base, "/from-nested-index", title="Page listed only below a nested sitemap index",
+        desc="Found through a sitemap index inside the sitemap index, so it must be in the report.")
     xml, gzipped = "application/xml", "application/gzip"
     good_child = gz(urlset(base, ["/from-child-sitemap"]))
 
@@ -131,6 +136,7 @@ def build_site(port):
             "/child-huge.xml.gz",       # skipped (over the 50 MB limit once unpacked)
             "/child-moved.xml",         # skipped (redirects to another host)
             "/child-doctype.xml",       # skipped (DOCTYPE/ENTITY, as in "billion laughs")
+            "/child-index.xml",         # an index inside the index -> /grandchild.xml -> /from-nested-index
         ]), xml),
         "/moved-sitemap.xml": (301, f"{other}/sitemap-a.xml", None),  # skipped (another host)
         # Children of the sitemap index
@@ -141,6 +147,8 @@ def build_site(port):
         "/child-moved.xml": (301, f"{other}/sitemap-b.xml", None),
         "/child-doctype.xml": (200, urlset(base, ["/must-not-appear-doctype"]).replace(
             "<urlset", '<!DOCTYPE urlset [<!ENTITY x "y">]><urlset', 1), xml),
+        "/child-index.xml": (200, sitemap_index(base, ["/grandchild.xml"]), xml),
+        "/grandchild.xml": (200, urlset(base, ["/from-nested-index"]), xml),
     })
     # Pages listed on the other host use the main site's URLs, so only the redirect check stops them.
     other_routes = {
