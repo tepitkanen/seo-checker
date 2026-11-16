@@ -340,3 +340,66 @@ def test_printed_urls_are_escaped(make_site, monkeypatch, capsys):
     list(Crawler(BASE, delay=0).fetch_pages(10))
     out = capsys.readouterr().out
     assert "\x1b" not in out and r"\x1b[2Jpage" in out
+
+
+# ---------- nested sitemap indexes ----------
+
+def test_index_inside_index_is_followed_and_its_urls_are_not_pages(make_site):
+    from test_crawler import sitemap_index
+    make_site({
+        f"{BASE}/sitemap_index.xml": FakeResponse(sitemap_index(f"{BASE}/inner-index.xml", f"{BASE}/c.xml")),
+        f"{BASE}/inner-index.xml": FakeResponse(sitemap_index(f"{BASE}/a.xml", f"{BASE}/b.xml")),
+        f"{BASE}/a.xml": FakeResponse(sitemap(f"{BASE}/page-a")),
+        f"{BASE}/b.xml": FakeResponse(sitemap(f"{BASE}/page-b")),
+        f"{BASE}/c.xml": FakeResponse(sitemap(f"{BASE}/page-c")),
+    })
+    urls = Crawler(BASE, delay=0).discover_urls(10)
+    assert urls == [f"{BASE}/page-a", f"{BASE}/page-b", f"{BASE}/page-c"]
+
+
+def test_too_deeply_nested_index_gives_no_sitemap_urls_as_pages(make_site, monkeypatch):
+    from test_crawler import sitemap_index
+    monkeypatch.setattr("checker.crawl.MAX_SITEMAP_DEPTH", 1)
+    make_site({
+        f"{BASE}/sitemap_index.xml": FakeResponse(sitemap_index(f"{BASE}/l1.xml", f"{BASE}/ok.xml")),
+        f"{BASE}/l1.xml": FakeResponse(sitemap_index(f"{BASE}/l2.xml")),  # index at the limit
+        f"{BASE}/l2.xml": FakeResponse(sitemap(f"{BASE}/too-deep")),
+        f"{BASE}/ok.xml": FakeResponse(sitemap(f"{BASE}/page")),
+    })
+    assert Crawler(BASE, delay=0).discover_urls(10) == [f"{BASE}/page"]
+
+
+def test_sitemap_index_loop_is_read_once(make_site):
+    from test_crawler import sitemap_index
+    site = make_site({
+        f"{BASE}/sitemap_index.xml": FakeResponse(sitemap_index(f"{BASE}/a.xml")),
+        f"{BASE}/a.xml": FakeResponse(sitemap_index(f"{BASE}/b.xml", f"{BASE}/pages.xml")),
+        f"{BASE}/b.xml": FakeResponse(sitemap_index(f"{BASE}/a.xml", f"{BASE}/sitemap_index.xml")),
+        f"{BASE}/pages.xml": FakeResponse(sitemap(f"{BASE}/page")),
+    })
+    assert Crawler(BASE, delay=0).discover_urls(10) == [f"{BASE}/page"]
+    sitemaps = [u for u in site.requested if u.endswith(".xml")]
+    assert len(sitemaps) == len(set(sitemaps))  # no sitemap fetched twice
+
+
+def test_sitemap_listed_in_robots_and_in_index_is_fetched_once(make_site):
+    from test_crawler import sitemap_index
+    site = make_site({
+        f"{BASE}/robots.txt": FakeResponse(f"Sitemap: {BASE}/index.xml\nSitemap: {BASE}/a.xml\n"),
+        f"{BASE}/index.xml": FakeResponse(sitemap_index(f"{BASE}/a.xml")),
+        f"{BASE}/a.xml": FakeResponse(sitemap(f"{BASE}/page")),
+    })
+    assert Crawler(BASE, delay=0).discover_urls(10) == [f"{BASE}/page"]
+    assert site.requested.count(f"{BASE}/a.xml") == 1
+
+
+def test_nested_index_respects_max_pages(make_site):
+    from test_crawler import sitemap_index
+    site = make_site({
+        f"{BASE}/sitemap_index.xml": FakeResponse(sitemap_index(f"{BASE}/inner.xml", f"{BASE}/never.xml")),
+        f"{BASE}/inner.xml": FakeResponse(sitemap_index(f"{BASE}/a.xml", f"{BASE}/b.xml")),
+        f"{BASE}/a.xml": FakeResponse(sitemap(*[f"{BASE}/p{i}" for i in range(5)])),
+        f"{BASE}/b.xml": FakeResponse(sitemap(f"{BASE}/later")),
+    })
+    assert Crawler(BASE, delay=0).discover_urls(3) == [f"{BASE}/p0", f"{BASE}/p1", f"{BASE}/p2"]
+    assert f"{BASE}/b.xml" not in site.requested and f"{BASE}/never.xml" not in site.requested

@@ -241,7 +241,8 @@ def test_discovery_has_no_duplicates_and_no_private_page_in_sitemap(site, crawl)
 def test_discovery_exact_set(site, crawl):
     _, urls = crawl
     expected = {"/", "/about", "/noindex-header", "/none-header", "/slow", "/large", "/sloppy",
-                "/meta-noindex", "/formula", "/old-about", "/server-error", "/from-child-sitemap"}
+                "/meta-noindex", "/formula", "/old-about", "/server-error", "/from-child-sitemap",
+                "/from-nested-index"}
     assert paths(site, urls) == expected
 
 

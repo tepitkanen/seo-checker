@@ -16,6 +16,9 @@ USER_AGENT = "Mozilla/5.0 (compatible; seo-checker/1.0)"
 TIMEOUT = 15
 SITEMAP_PATHS = ("/sitemap_index.xml", "/sitemap.xml")
 MAX_SITEMAP_BYTES = 50 * 1024 * 1024  # sitemaps.org limit for an uncompressed sitemap
+# How many sitemap indexes deep to follow: 1 is what the spec allows, a few more covers plugins
+# that nest them, and the limit stops an endless chain of index -> index -> ...
+MAX_SITEMAP_DEPTH = 3
 # Any download stops here, so a huge or endless response can't exhaust memory.
 MAX_RESPONSE_BYTES = 50 * 1024 * 1024
 DTD_RE = re.compile(r"<!\s*(DOCTYPE|ENTITY)", re.IGNORECASE)
@@ -132,16 +135,16 @@ class Crawler:
         Sitemaps listed in robots.txt are used first (all of them, since sites often list
         several); without any, the usual /sitemap_index.xml and /sitemap.xml are tried.
         """
-        urls = []
+        urls, seen = [], set()  # seen: sitemaps already read, so none is fetched twice
         for sitemap_url in self.robots_sitemaps():
             if len(urls) >= max_pages:
                 break
             # dict.fromkeys drops URLs listed more than once, keeping the first position.
-            urls = list(dict.fromkeys(urls + self._read_sitemap(sitemap_url, max_pages - len(urls))))
+            urls = list(dict.fromkeys(urls + self._read_sitemap(sitemap_url, max_pages - len(urls), seen=seen)))
         if urls:
             return urls[:max_pages]
         for path in SITEMAP_PATHS:
-            urls = list(dict.fromkeys(self._read_sitemap(self.base + path, max_pages)))
+            urls = list(dict.fromkeys(self._read_sitemap(self.base + path, max_pages, seen=seen)))
             if urls:
                 return urls[:max_pages]
         resp = self.get(self.base + "/")
@@ -167,33 +170,35 @@ class Crawler:
             return None
         return resp
 
-    def _read_sitemap(self, sitemap_url, max_pages):
-        """Fetch one sitemap (or sitemap index) and return its page URLs; [] if it fails."""
+    def _read_sitemap(self, sitemap_url, max_pages, depth=0, seen=None):
+        """Fetch one sitemap (or sitemap index) and return its page URLs; [] if it fails.
+
+        A sitemap index's children are read in turn; an index inside an index is followed too
+        (the spec forbids it, but some plugins do it), up to MAX_SITEMAP_DEPTH levels. Its URLs
+        are sitemaps, never pages. seen holds sitemaps already read, so a loop can't repeat.
+        """
+        seen = set() if seen is None else seen
+        if sitemap_url in seen:
+            return []
+        seen.add(sitemap_url)
         resp = self._get_sitemap(sitemap_url)
         if resp is None:
             return []
         try:
-            return self._expand_sitemap(sitemap_text(resp), max_pages)
-        except ET.ParseError:
+            urls, is_index = parse_sitemap(sitemap_text(resp))
+        except ET.ParseError:  # skip a broken sitemap instead of losing the others
             return []
-
-    def _expand_sitemap(self, xml_text, max_pages):
-        urls, is_index = parse_sitemap(xml_text)
         # Only follow URLs on the site being checked, never other hosts listed in a sitemap.
         urls = [u for u in urls if self._same_site(u)]
         if not is_index:
             return urls
+        if depth >= MAX_SITEMAP_DEPTH:
+            return []
         pages = []
         for child in urls:
             if len(pages) >= max_pages:
                 break
-            resp = self._get_sitemap(child)
-            if resp is None:
-                continue
-            try:
-                pages += [u for u in parse_sitemap(sitemap_text(resp))[0] if self._same_site(u)]
-            except ET.ParseError:  # skip one broken sub-sitemap instead of losing all pages
-                continue
+            pages += self._read_sitemap(child, max_pages - len(pages), depth + 1, seen)
         return pages
 
     def fetch_pages(self, max_pages):

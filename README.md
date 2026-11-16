@@ -43,7 +43,8 @@ Perplexity, Google AI Overviews) understand and cite a site.
 
 1. Reads the sitemaps listed as `Sitemap:` lines in `robots.txt` (all of them).
 2. Without any, reads `/sitemap_index.xml` or `/sitemap.xml` (generated automatically by Yoast
-   and Rank Math on WordPress sites). Sub-sitemaps of a sitemap index are followed, and
+   and Rank Math on WordPress sites). Sub-sitemaps of a sitemap index are followed (an index
+   inside an index too, up to 3 levels, each sitemap read once), and
    gzipped sitemaps (`.xml.gz`) are unpacked.
 3. If there is no sitemap, it collects internal links from the homepage.
 
