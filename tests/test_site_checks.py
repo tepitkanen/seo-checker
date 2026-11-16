@@ -305,3 +305,38 @@ def test_csv_neutralises_formulas(tmp_path):
     assert row["title"] == '\'=HYPERLINK("http://evil.example","x")'
     assert row["description"] == "'@SUM(1)"
     assert row["url"] == BASE + "/" and row["status"] == "200"
+
+
+# ---------- DTDs in sitemaps, response size cap ----------
+
+BILLION_LAUGHS = ('<?xml version="1.0"?><!DOCTYPE lolz [<!ENTITY lol "lol">'
+                  '<!ENTITY lol2 "&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;">]>'
+                  '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+                  f'<url><loc>{BASE}/&lol2;</loc></url></urlset>')
+
+
+def test_sitemap_with_doctype_is_skipped(make_site):
+    make_site({
+        f"{BASE}/robots.txt": FakeResponse(f"Sitemap: {BASE}/lol.xml\n"),
+        f"{BASE}/lol.xml": FakeResponse(BILLION_LAUGHS),
+        f"{BASE}/sitemap.xml": FakeResponse(sitemap(f"{BASE}/ok")),
+    })
+    assert Crawler(BASE, delay=0).discover_urls(10) == [f"{BASE}/ok"]
+
+
+def test_response_over_size_cap_is_dropped(make_site, monkeypatch, capsys):
+    monkeypatch.setattr("checker.crawl.MAX_RESPONSE_BYTES", 1000)
+    make_site({f"{BASE}/big": FakeResponse("x" * 1001), f"{BASE}/fits": FakeResponse("x" * 1000)})
+    crawler = Crawler(BASE, delay=0)
+    assert crawler.get(f"{BASE}/big") is None
+    assert "skipped (over 0 MB)" in capsys.readouterr().out
+    assert crawler.get(f"{BASE}/fits").content == b"x" * 1000
+
+
+def test_printed_urls_are_escaped(make_site, monkeypatch, capsys):
+    # XML can't hold control characters, but a homepage link can (used when there's no sitemap).
+    make_site({f"{BASE}/robots.txt": FakeResponse("User-agent: *\nDisallow: /\n"),
+               f"{BASE}/": FakeResponse('<a href="/\x1b[2Jpage">x</a>', content_type="text/html")})
+    list(Crawler(BASE, delay=0).fetch_pages(10))
+    out = capsys.readouterr().out
+    assert "\x1b" not in out and r"\x1b[2Jpage" in out

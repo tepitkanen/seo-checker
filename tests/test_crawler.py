@@ -30,6 +30,14 @@ class FakeResponse:
         self.headers = {"Content-Type": content_type, **(headers or {})}
         self.elapsed = timedelta(milliseconds=elapsed_ms)
 
+    def iter_content(self, chunk_size=1):
+        """Like requests' streaming read, used by Crawler.get."""
+        for i in range(0, len(self.content), chunk_size):
+            yield self.content[i:i + chunk_size]
+
+    def close(self):
+        pass
+
 
 class FakeSite:
     """Maps URL -> FakeResponse (or an exception to raise). Unknown URLs return 404."""
@@ -52,7 +60,7 @@ def make_site(monkeypatch):
     def install(pages):
         site = FakeSite(pages)
         # A plain function is needed here so Python passes the session as the first argument.
-        monkeypatch.setattr(requests.Session, "get", lambda session, url, timeout=None: site.get(url))
+        monkeypatch.setattr(requests.Session, "get", lambda session, url, **kwargs: site.get(url))
         return site
     return install
 
@@ -442,9 +450,17 @@ def test_canonical_to_other_page_is_flagged():
     assert "Canonical points elsewhere" in result["issues"]
 
 
-def test_whitespace_only_alt_counts_as_missing():
+def test_whitespace_only_alt_counts_as_empty():
     html = '<img src="a.jpg" alt="   "><img src="b.jpg" alt="ok"><img src="c.jpg">'
-    assert check_page(html, "https://example.fi/")["images_missing_alt"] == 2
+    result = check_page(html, "https://example.fi/")
+    assert result["images_missing_alt"] == 1  # c.jpg
+    assert result["images_empty_alt"] == 1    # a.jpg
+
+
+def test_only_empty_alt_gives_only_the_softer_issue():
+    result = check_page('<img src="deco.png" alt="">', "https://example.fi/")
+    assert "Images with empty alt" in result["issues"]
+    assert "Images missing alt" not in result["issues"]
 
 
 def test_non_200_page_only_reports_http_status():

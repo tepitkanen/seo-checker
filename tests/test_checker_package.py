@@ -20,11 +20,13 @@ import checker.crawl
 import checker.pages
 import checker.report
 import checker.urls
-from checker.crawl import _gunzip_capped, find_broken_links, sitemap_text
+import xml.etree.ElementTree as ET
+
+from checker.crawl import _gunzip_capped, find_broken_links, parse_sitemap, sitemap_text
 from checker.pages import (check_page, find_meta, find_schema_types, get_attr, internal_links,
                            mark_duplicates)
 from checker.report import csv_safe, excel_safe, write_csv, write_xlsx
-from checker.urls import NON_PAGE_EXTENSIONS, link_key, site_host
+from checker.urls import NON_PAGE_EXTENSIONS, link_key, printable, site_host
 
 
 def soup_of(html):
@@ -41,9 +43,41 @@ def soup_of(html):
     ("https://wwwexample.fi/", "wwwexample.fi"),
     ("https://sub.www.example.fi/", "sub.www.example.fi"),
     ("", ""),
+    # default ports and user info are not part of the site
+    ("https://example.fi:443/a", "example.fi"),
+    ("http://www.example.fi:80/", "example.fi"),
+    ("https://user:pw@example.fi/", "example.fi"),
+    ("http://example.fi:443/", "example.fi:443"),  # 443 is not http's default port
+    ("http://[::1]:8080/", "[::1]:8080"),
 ])
 def test_site_host_variants(url, expected):
     assert site_host(url) == expected
+
+
+def test_default_port_is_same_page_for_link_key():
+    assert link_key("https://example.fi:443/a/") == link_key("https://example.fi/a")
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("https://example.fi/a?b=1", "https://example.fi/a?b=1"),
+    ("https://example.fi/\x1b[2J", "https://example.fi/\\x1b[2J"),   # ANSI "clear screen"
+    ("https://example.fi/a\nfake line", "https://example.fi/a\\x0afake line"),
+    ("https://example.fi/\u202egnp.exe", "https://example.fi/\\u202egnp.exe"),  # bidi override
+    ("https://example.fi/kengät", "https://example.fi/kengät"),  # normal non-ASCII is kept
+])
+def test_printable_escapes_control_characters(text, expected):
+    assert printable(text) == expected
+
+
+@pytest.mark.parametrize("prefix", [
+    '<!DOCTYPE urlset [<!ENTITY a "x">]>',
+    '<!doctype urlset>',
+    '<!ENTITY a "x">',
+])
+def test_parse_sitemap_refuses_dtd(prefix):
+    xml = prefix + '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>https://example.fi/a</loc></url></urlset>'
+    with pytest.raises(ET.ParseError):
+        parse_sitemap(xml)
 
 
 @pytest.mark.parametrize("a,b", [

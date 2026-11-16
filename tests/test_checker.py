@@ -60,7 +60,9 @@ def test_multiple_h1_and_missing_alt():
     html = '<h1>One</h1><h1>Two</h1><img src="a.jpg"><img src="b.jpg" alt="">'
     result = check_page(html, URL)
     assert "Multiple H1" in result["issues"]
-    assert result["images_missing_alt"] == 2
+    # a.jpg has no alt at all (an error); b.jpg has alt="" (decorative or forgotten: softer issue)
+    assert result["images_missing_alt"] == 1 and result["images_empty_alt"] == 1
+    assert "Images missing alt" in result["issues"] and "Images with empty alt" in result["issues"]
 
 
 def test_noindex_and_foreign_canonical():
@@ -138,7 +140,13 @@ def test_main_adds_same_timestamp_to_both_reports(tmp_path, monkeypatch):
     class NotFound:
         status_code, ok, text, content, url, headers = 404, False, "", b"", "", {}
         elapsed = timedelta(0)
-    monkeypatch.setattr(requests.Session, "get", lambda session, url, timeout=None: NotFound())
+
+        def iter_content(self, chunk_size=1):
+            return iter([])
+
+        def close(self):
+            pass
+    monkeypatch.setattr(requests.Session, "get", lambda session, url, **kwargs: NotFound())
     monkeypatch.setattr(time, "strftime", lambda fmt: "2026-11-15_143012")
     monkeypatch.setattr(sys, "argv", ["seo_checker.py", "https://example.fi", "--delay", "0",
                                       "--csv", str(tmp_path / "r.csv"), "--xlsx", str(tmp_path / "r.xlsx")])

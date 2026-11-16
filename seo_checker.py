@@ -18,7 +18,7 @@ from checker.pages import (DESC_MAX, DESC_MIN, LARGE_PAGE_KB, SLOW_RESPONSE_MS, 
                            get_attr, internal_links, mark_duplicates)
 from checker.report import (CSV_DELIMITERS, CSV_FIELDS, csv_safe, excel_safe,  # noqa: F401
                             print_summary, write_csv, write_xlsx)
-from checker.urls import NON_PAGE_EXTENSIONS, link_key, site_host  # noqa: F401
+from checker.urls import NON_PAGE_EXTENSIONS, link_key, printable, site_host  # noqa: F401
 
 
 def normalize_url(url):
@@ -90,7 +90,7 @@ def main():
     page_links, known_status = {}, {}
     broken, checked, capped = {}, 0, False
     for url, status, html, final_url, info in crawler.fetch_pages(args.max):
-        print(f"  [{status}] {url}")
+        print(f"  [{status}] {printable(url)}")
         results.append(check_page(html, url, status, final_url, info))
         known_status[url] = known_status[final_url] = status
         if args.check_links and status == 200:

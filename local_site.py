@@ -130,6 +130,7 @@ def build_site(port):
             "/child-truncated.xml.gz",  # skipped
             "/child-huge.xml.gz",       # skipped (over the 50 MB limit once unpacked)
             "/child-moved.xml",         # skipped (redirects to another host)
+            "/child-doctype.xml",       # skipped (DOCTYPE/ENTITY, as in "billion laughs")
         ]), xml),
         "/moved-sitemap.xml": (301, f"{other}/sitemap-a.xml", None),  # skipped (another host)
         # Children of the sitemap index
@@ -138,6 +139,8 @@ def build_site(port):
         "/child-truncated.xml.gz": (200, gz(urlset(base, ["/must-not-appear-truncated"]))[:-20], gzipped),
         "/child-huge.xml.gz": (200, gzip_bomb(urlset(base, ["/must-not-appear-huge"]), 60), gzipped),
         "/child-moved.xml": (301, f"{other}/sitemap-b.xml", None),
+        "/child-doctype.xml": (200, urlset(base, ["/must-not-appear-doctype"]).replace(
+            "<urlset", '<!DOCTYPE urlset [<!ENTITY x "y">]><urlset', 1), xml),
     })
     # Pages listed on the other host use the main site's URLs, so only the redirect check stops them.
     other_routes = {
