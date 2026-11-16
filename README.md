@@ -1,5 +1,7 @@
 # seo-checker
 
+[![Tests](https://github.com/tepitkanen/seo-checker/actions/workflows/tests.yml/badge.svg)](https://github.com/tepitkanen/seo-checker/actions/workflows/tests.yml)
+
 A small command-line tool that crawls a website and reports common on-page SEO and GEO
 (generative engine optimization) issues. The output is a console summary and an optional
 CSV and/or Excel report.
