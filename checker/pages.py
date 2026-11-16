@@ -87,7 +87,10 @@ def check_page(html, url, status=200, final_url=None, info=None):
     canonical_href = get_attr(soup.select_one('link[rel~="canonical"]'), "href")
     if canonical_href:
         page_url = final_url or url  # if /a redirects to /b, /b's canonical should point to /b
-        result["canonical"] = urljoin(page_url, canonical_href)
+        try:
+            result["canonical"] = urljoin(page_url, canonical_href)
+        except ValueError:  # malformed href such as "http://[x"
+            result["canonical"] = canonical_href
         if result["canonical"].rstrip("/") != page_url.rstrip("/"):
             issues.append("Canonical points elsewhere")
     else:
@@ -146,8 +149,11 @@ def internal_links(html, base_url):
     host = site_host(base_url)
     links = []
     for a in BeautifulSoup(html, "html.parser").select("a[href]"):
-        link = urldefrag(urljoin(base_url, get_attr(a, "href")))[0]
-        if site_host(link) != host or urlparse(link).path.lower().endswith(NON_PAGE_EXTENSIONS):
+        try:
+            link = urldefrag(urljoin(base_url, get_attr(a, "href")))[0]
+            if site_host(link) != host or urlparse(link).path.lower().endswith(NON_PAGE_EXTENSIONS):
+                continue
+        except ValueError:  # malformed href such as "http://[x" raises "Invalid IPv6 URL"
             continue
         if link not in links:
             links.append(link)
