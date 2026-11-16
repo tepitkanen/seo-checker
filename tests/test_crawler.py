@@ -14,7 +14,7 @@ import requests
 from openpyxl import load_workbook
 
 import seo_checker
-from seo_checker import Crawler, check_page, main, print_summary
+from seo_checker import Crawler, check_page, link_key, main, print_summary
 
 BASE = "https://example.fi"
 
@@ -155,6 +155,27 @@ def test_discover_falls_back_to_homepage_links(make_site):
 def test_discover_homepage_fallback_does_not_duplicate_homepage(make_site):
     make_site({f"{BASE}/": FakeResponse('<a href="/">Home</a><a href="/a">A</a>')})
     assert Crawler(BASE, delay=0).discover_urls(10) == [f"{BASE}/", f"{BASE}/a"]
+
+
+def test_discover_homepage_fallback_skips_index_html_duplicates(make_site):
+    html = ('<a href="/index.html">Home</a><a href="/a/">A</a>'
+            '<a href="/a/index.htm">A again</a><a href="/myindex.html">Other</a>')
+    make_site({f"{BASE}/": FakeResponse(html)})
+    assert Crawler(BASE, delay=0).discover_urls(10) == [f"{BASE}/", f"{BASE}/a/", f"{BASE}/myindex.html"]
+
+
+@pytest.mark.parametrize("a, b", [
+    ("https://example.fi/", "https://example.fi/index.html"),
+    ("https://example.fi/a/", "http://www.example.fi/a/INDEX.HTM"),
+    ("https://example.fi/a?x=1", "https://example.fi/a/index.html?x=1"),
+])
+def test_link_key_treats_index_file_as_same_page(a, b):
+    assert link_key(a) == link_key(b)
+
+
+def test_link_key_keeps_other_files_and_queries_apart():
+    assert link_key("https://example.fi/myindex.html") != link_key("https://example.fi/")
+    assert link_key("https://example.fi/a?x=1") != link_key("https://example.fi/a?x=2")
 
 
 def test_discover_homepage_fallback_respects_max_pages(make_site):
