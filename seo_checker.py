@@ -6,7 +6,9 @@ and checker.report (CSV/Excel/summary output).
 """
 
 import argparse
+import math
 import os
+import sys
 import time
 
 # Re-exported so "from seo_checker import ..." keeps working for tests and other scripts.
@@ -55,6 +57,17 @@ def report_path_problem(path):
     folder = os.path.dirname(os.path.abspath(path))
     if not os.path.isdir(folder):
         return f"folder does not exist: {folder}"
+    if os.path.isdir(path):
+        return f"is a folder, not a file: {path}"
+    # Try it: catches a read-only folder, missing permissions or a file open in Excel.
+    existed = os.path.exists(path)
+    try:
+        with open(path, "a"):  # append mode leaves an existing file's content untouched
+            pass
+    except OSError as e:
+        return f"can't write {path}: {e.strerror or e}"
+    if not existed:
+        os.remove(path)
     return None
 
 
@@ -72,8 +85,13 @@ def main():
     parser.add_argument("--max-links", type=positive_int, default=100,
                         help="Max extra link URLs to request with --check-links (default 100)")
     args = parser.parse_args()
-    if not args.delay >= 0:  # time.sleep() would crash on a negative or NaN delay
-        parser.error("--delay must be 0 or more")
+    # time.sleep() would crash on a negative, NaN or infinite delay
+    if not (args.delay >= 0 and math.isfinite(args.delay)):
+        parser.error("--delay must be a number, 0 or more")
+    # Checked before the timestamp is added, which would turn a folder name into a file name.
+    for option, path in (("--csv", args.csv), ("--xlsx", args.xlsx)):
+        if path and os.path.isdir(path):
+            parser.error(f"{option} needs a file name, not a folder: {path} (e.g. {os.path.join(path, 'report')})")
     # One timestamp for the whole run, so the CSV and Excel files of a run share it.
     stamp = time.strftime("%Y-%m-%d_%H%M%S")
     if args.csv:
@@ -110,12 +128,24 @@ def main():
         print(f"Links: {checked} extra URLs requested, {total} broken links found")
         if capped:
             print(f"  (stopped at --max-links {args.max_links}; some links were not checked)")
-    if args.csv:
-        write_csv(results, args.csv, CSV_DELIMITERS[args.csv_delimiter])
-        print(f"\nCSV report written to {args.csv}")
-    if args.xlsx:
-        write_xlsx(results, args.xlsx)
-        print(f"Excel report written to {args.xlsx}")
+    # Paths were checked before crawling, but writing can still fail (disk full, file opened in
+    # Excel meanwhile). One failed report must not stop the other from being written.
+    failed = False
+    reports = [("CSV", args.csv, lambda p: write_csv(results, p, CSV_DELIMITERS[args.csv_delimiter])),
+               ("Excel", args.xlsx, lambda p: write_xlsx(results, p))]
+    if args.csv or args.xlsx:
+        print()
+    for kind, path, write in reports:
+        if not path:
+            continue
+        try:
+            write(path)
+            print(f"{kind} report written to {path}")
+        except OSError as e:
+            print(f"error: could not write the {kind} report to {path}: {e.strerror or e}", file=sys.stderr)
+            failed = True
+    if failed:
+        sys.exit(1)
 
 
 if __name__ == "__main__":

@@ -34,9 +34,19 @@ def csv_safe(value):
     return value
 
 
+EXCEL_CELL_MAX = 32767  # longest text Excel allows in a cell; longer cells make it "repair" the file
+TRUNCATED = " [truncated]"
+
+
 def excel_safe(value):
-    """Remove control characters that Excel files can't store (openpyxl would raise an error)."""
-    return ILLEGAL_CHARACTERS_RE.sub("", value) if isinstance(value, str) else value
+    """Remove control characters that Excel files can't store (openpyxl would raise an error),
+    and shorten text that is over Excel's cell limit, e.g. a very long broken links list."""
+    if not isinstance(value, str):
+        return value
+    value = ILLEGAL_CHARACTERS_RE.sub("", value)
+    if len(value) > EXCEL_CELL_MAX:
+        value = value[:EXCEL_CELL_MAX - len(TRUNCATED)] + TRUNCATED
+    return value
 
 
 def write_xlsx(results, path):

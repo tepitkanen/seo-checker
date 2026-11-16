@@ -267,3 +267,127 @@ def test_internal_links_dedupes_fast_and_keeps_order():
     links = internal_links(html, BASE + "/")
     assert links[:3] == [f"{BASE}/p0", f"{BASE}/p1", f"{BASE}/p2"] and len(links) == 5000
     assert time.perf_counter() - start < 10  # was quadratic: hundreds of millions of comparisons
+
+
+# ---------- remaining low-priority findings ----------
+
+def test_robots_5xx_warns_and_allows_everything(site, capsys):
+    site[f"{BASE}/robots.txt"] = Resp("User-agent: *\nDisallow: /\n", status=503)
+    c = Crawler(BASE, delay=0)
+    out = capsys.readouterr().out
+    assert "robots.txt returned 503" in out and "server error" in out
+    assert c.allowed(f"{BASE}/anything")
+
+
+def sitemap_xml(*urls):
+    return ('<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+            + "".join(f"<url><loc>{u}</loc></url>" for u in urls) + "</urlset>")
+
+
+def index_xml(*urls):
+    return ('<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+            + "".join(f"<sitemap><loc>{u}</loc></sitemap>" for u in urls) + "</sitemapindex>")
+
+
+def test_overlapping_child_sitemaps_still_reach_max_unique_pages(site):
+    site[f"{BASE}/sitemap_index.xml"] = Resp(index_xml(f"{BASE}/a.xml", f"{BASE}/b.xml", f"{BASE}/c.xml"))
+    site[f"{BASE}/a.xml"] = Resp(sitemap_xml(f"{BASE}/p1", f"{BASE}/p2", f"{BASE}/p3"))
+    site[f"{BASE}/b.xml"] = Resp(sitemap_xml(f"{BASE}/p1", f"{BASE}/p2", f"{BASE}/p3"))  # same pages
+    site[f"{BASE}/c.xml"] = Resp(sitemap_xml(f"{BASE}/p4"))
+    assert Crawler(BASE, delay=0).discover_urls(5) == [f"{BASE}/p1", f"{BASE}/p2", f"{BASE}/p3", f"{BASE}/p4"]
+
+
+class FakeLinkCrawler:
+    def __init__(self, status):
+        self.status, self.requested = status, []
+
+    def allowed(self, url):
+        return True
+
+    def link_status(self, url):
+        self.requested.append(url)
+        return self.status
+
+
+def test_broken_link_with_and_without_slash_is_listed_once():
+    crawler = FakeLinkCrawler(404)
+    page = f"{BASE}/page"
+    broken, checked, capped = find_broken_links(
+        {page: [f"{BASE}/x", f"{BASE}/x/", f"{BASE}/x/index.html"]}, {}, crawler, 10)
+    assert broken == {page: [f"{BASE}/x"]} and checked == 1 and not capped
+
+
+def test_same_broken_target_is_listed_on_every_page_that_links_it():
+    crawler = FakeLinkCrawler(404)
+    broken, checked, _ = find_broken_links(
+        {f"{BASE}/a": [f"{BASE}/x"], f"{BASE}/b": [f"{BASE}/x/"]}, {}, crawler, 10)
+    assert set(broken) == {f"{BASE}/a", f"{BASE}/b"} and checked == 1
+
+
+def test_excel_safe_truncates_over_cell_limit():
+    from checker.report import EXCEL_CELL_MAX, TRUNCATED, excel_safe
+    assert excel_safe("x" * EXCEL_CELL_MAX) == "x" * EXCEL_CELL_MAX  # exactly at the limit: kept
+    long = excel_safe("x" * (EXCEL_CELL_MAX + 5000))
+    assert len(long) == EXCEL_CELL_MAX and long.endswith(TRUNCATED)
+
+
+def test_xlsx_with_huge_broken_links_cell_stays_within_excel_limit(tmp_path):
+    from openpyxl import load_workbook
+    from checker.pages import check_page
+    from checker.report import CSV_FIELDS, EXCEL_CELL_MAX, write_xlsx
+    result = check_page("<title>t</title>", f"{BASE}/")
+    result["broken_links"] = "; ".join(f"{BASE}/missing-page-{i}" for i in range(3000))  # ~110k chars
+    path = tmp_path / "r.xlsx"
+    write_xlsx([result], path)
+    ws = load_workbook(path).active
+    cell = ws.cell(row=2, column=CSV_FIELDS.index("broken_links") + 1).value
+    assert len(cell) == EXCEL_CELL_MAX
+
+
+@pytest.mark.parametrize("delay", ["inf", "-inf", "nan", "1e999"])
+def test_main_rejects_non_finite_delay(site, monkeypatch, capsys, delay):
+    monkeypatch.setattr(sys, "argv", ["seo_checker.py", BASE, "--delay", delay])
+    with pytest.raises(SystemExit) as e:
+        main()
+    assert e.value.code == 2 and "--delay" in capsys.readouterr().err
+    assert site.requested == []
+
+
+def test_report_path_problem_rejects_a_folder(tmp_path):
+    problem = seo_checker.report_path_problem(str(tmp_path))
+    assert problem and "is a folder" in problem
+
+
+def test_report_path_problem_reports_unwritable_file_and_leaves_no_probe(tmp_path, monkeypatch):
+    target = tmp_path / "r.csv"
+    assert seo_checker.report_path_problem(str(target)) is None
+    assert not target.exists()  # the write test removed its probe file
+
+    def locked(path, mode="r", *args, **kwargs):
+        raise PermissionError(13, "Permission denied")
+    monkeypatch.setattr(seo_checker, "open", locked, raising=False)
+    problem = seo_checker.report_path_problem(str(target))
+    assert problem and "can't write" in problem and "Permission denied" in problem
+
+
+def test_failed_csv_write_still_writes_xlsx_and_exits_1(site, monkeypatch, tmp_path, capsys):
+    site[f"{BASE}/"] = Resp(HTML % "")
+
+    def broken_write(results, path, delimiter=","):
+        raise OSError(28, "No space left on device")
+    monkeypatch.setattr(seo_checker, "write_csv", broken_write)
+    with pytest.raises(SystemExit) as e:
+        run_main(monkeypatch, "--csv", str(tmp_path / "r.csv"), "--xlsx", str(tmp_path / "r.xlsx"))
+    assert e.value.code == 1
+    captured = capsys.readouterr()
+    assert "could not write the CSV report" in captured.err and "No space left" in captured.err
+    assert "Excel report written" in captured.out and (tmp_path / "r.xlsx").exists()
+
+
+@pytest.mark.parametrize("option", ["--csv", "--xlsx"])
+def test_main_rejects_a_folder_as_report_path(site, monkeypatch, tmp_path, capsys, option):
+    monkeypatch.setattr(sys, "argv", ["seo_checker.py", BASE, "--delay", "0", option, str(tmp_path)])
+    with pytest.raises(SystemExit) as e:
+        main()
+    assert e.value.code == 2 and "not a folder" in capsys.readouterr().err
+    assert site.requested == [] and list(tmp_path.iterdir()) == []  # nothing crawled or written

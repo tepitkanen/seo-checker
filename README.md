@@ -52,7 +52,13 @@ Sitemaps that redirect to another host, or that contain a `<!DOCTYPE` or `<!ENTI
 needed in a sitemap, and used in XML attacks), are skipped. Any download over 50 MB is stopped.
 
 It respects `robots.txt` (if it returns 401 or 403, a warning is printed and every page is
-treated as allowed, as Google does), waits between requests (`--delay`, default 1 s) and stops at `--max` pages.
+treated as allowed, as Google does; a 5xx server error is treated the same way with a warning,
+although Google would pause crawling the site), waits between requests (`--delay`, default 1 s)
+and stops at `--max` unique pages.
+
+Report paths are checked for write access before crawling, so a bad path fails right away.
+If writing a report still fails at the end, the other report is written anyway. Excel cells
+longer than Excel's limit (32,767 characters) are cut and end with ` [truncated]`.
 
 ## Install
 

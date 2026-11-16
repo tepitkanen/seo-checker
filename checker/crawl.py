@@ -98,6 +98,11 @@ class Crawler:
         if resp is not None and resp.status_code in (401, 403):
             # Like Google, treat it as no robots.txt; Python's RobotFileParser.read() would block all.
             print(f"  warning: robots.txt returned {resp.status_code}; treating every page as allowed")
+        elif resp is not None and resp.status_code >= 500:
+            # Google stops crawling a site whose robots.txt fails; a checker would then report
+            # nothing, so it carries on, but the error itself is worth knowing about.
+            print(f"  warning: robots.txt returned {resp.status_code} (server error; Google would pause "
+                  "crawling this site); treating every page as allowed")
         self.robots.parse(resp.text.splitlines() if resp is not None and resp.ok else [])
 
     def get(self, url):
@@ -198,7 +203,9 @@ class Crawler:
         for child in urls:
             if len(pages) >= max_pages:
                 break
-            pages += self._read_sitemap(child, max_pages - len(pages), depth + 1, seen)
+            # dict.fromkeys drops pages that overlapping child sitemaps both list, so --max
+            # counts unique pages.
+            pages = list(dict.fromkeys(pages + self._read_sitemap(child, max_pages - len(pages), depth + 1, seen)))
         return pages
 
     def fetch_pages(self, max_pages):
@@ -248,8 +255,12 @@ def find_broken_links(page_links, known_status, crawler, max_links):
     statuses = {link_key(u): s for u, s in known_status.items()}
     broken, checked, capped = {}, 0, False
     for page, links in page_links.items():
+        listed = set()  # /a and /a/ are one link, so a page lists each broken target once
         for link in links:
             key = link_key(link)
+            if key in listed:
+                continue
+            listed.add(key)
             if key not in statuses:
                 if not crawler.allowed(link):
                     continue
