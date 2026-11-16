@@ -6,6 +6,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import argparse
 import time
+from datetime import timedelta
 
 import pytest
 import requests
@@ -136,6 +137,7 @@ def test_main_adds_same_timestamp_to_both_reports(tmp_path, monkeypatch):
     # Fake site: everything returns 404, so the run is fast and offline.
     class NotFound:
         status_code, ok, text, content, url, headers = 404, False, "", b"", "", {}
+        elapsed = timedelta(0)
     monkeypatch.setattr(requests.Session, "get", lambda session, url, timeout=None: NotFound())
     monkeypatch.setattr(time, "strftime", lambda fmt: "2026-11-15_143012")
     monkeypatch.setattr(sys, "argv", ["seo_checker.py", "https://example.fi", "--delay", "0",

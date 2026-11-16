@@ -5,6 +5,7 @@ No real network: requests.Session.get is replaced by a fake that serves pages fr
 import csv
 import os
 import sys
+from datetime import timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -19,13 +20,15 @@ BASE = "https://example.fi"
 
 
 class FakeResponse:
-    def __init__(self, text="", status=200, content_type="text/plain", content=None, url=""):
+    def __init__(self, text="", status=200, content_type="text/plain", content=None, url="",
+                 headers=None, elapsed_ms=0):
         self.text = text
         self.url = url  # final URL after redirects; "" means "same as requested"
         self.content = text.encode("utf-8") if content is None else content
         self.status_code = status
         self.ok = status < 400
-        self.headers = {"Content-Type": content_type}
+        self.headers = {"Content-Type": content_type, **(headers or {})}
+        self.elapsed = timedelta(milliseconds=elapsed_ms)
 
 
 class FakeSite:
@@ -181,7 +184,7 @@ def test_fetch_pages_skips_robots_disallowed_urls(make_site, capsys):
         f"{BASE}/secret": FakeResponse("hidden"),
     })
     pages = list(Crawler(BASE, delay=0).fetch_pages(10))
-    assert pages == [(f"{BASE}/ok", 200, "<html>ok</html>", f"{BASE}/ok")]
+    assert [p[:4] for p in pages] == [(f"{BASE}/ok", 200, "<html>ok</html>", f"{BASE}/ok")]
     assert "skipped (robots.txt)" in capsys.readouterr().out
 
 
@@ -199,12 +202,13 @@ def test_fetch_pages_yields_status_0_on_network_error(make_site):
         f"{BASE}/sitemap.xml": FakeResponse(sitemap(f"{BASE}/a")),
         f"{BASE}/a": requests.ConnectionError("boom"),
     })
-    assert list(Crawler(BASE, delay=0).fetch_pages(10)) == [(f"{BASE}/a", 0, "", f"{BASE}/a")]
+    assert list(Crawler(BASE, delay=0).fetch_pages(10)) == [(f"{BASE}/a", 0, "", f"{BASE}/a", {})]
 
 
 def test_fetch_pages_passes_through_http_error_status(make_site):
     make_site({f"{BASE}/sitemap.xml": FakeResponse(sitemap(f"{BASE}/gone"))})  # /gone -> 404
-    assert list(Crawler(BASE, delay=0).fetch_pages(10)) == [(f"{BASE}/gone", 404, "", f"{BASE}/gone")]
+    [page] = list(Crawler(BASE, delay=0).fetch_pages(10))
+    assert page[:4] == (f"{BASE}/gone", 404, "", f"{BASE}/gone")
 
 
 def test_fetch_pages_reports_final_url_after_redirect(make_site):
@@ -212,7 +216,7 @@ def test_fetch_pages_reports_final_url_after_redirect(make_site):
         f"{BASE}/sitemap.xml": FakeResponse(sitemap(f"{BASE}/old")),
         f"{BASE}/old": FakeResponse("<html></html>", url=f"{BASE}/new/"),
     })
-    [(url, _, _, final_url)] = list(Crawler(BASE, delay=0).fetch_pages(10))
+    [(url, _, _, final_url, _)] = list(Crawler(BASE, delay=0).fetch_pages(10))
     assert (url, final_url) == (f"{BASE}/old", f"{BASE}/new/")
 
 
@@ -440,7 +444,7 @@ def test_fetch_pages_uses_meta_charset_when_header_has_none(make_site):
         # requests would decode this as ISO-8859-1, giving "KengÃ¤t" in .text
         f"{BASE}/a": FakeResponse(body.decode("latin-1"), content_type="text/html", content=body),
     })
-    [(_, _, html, _)] = list(Crawler(BASE, delay=0).fetch_pages(10))
+    [(_, _, html, _, _)] = list(Crawler(BASE, delay=0).fetch_pages(10))
     assert check_page(html, f"{BASE}/a")["title"] == "Kengät"
 
 
@@ -450,7 +454,7 @@ def test_fetch_pages_trusts_charset_in_header(make_site):
         f"{BASE}/a": FakeResponse("<title>Kengät</title>", content_type="text/html; charset=utf-8",
                                   content=b"ignored"),
     })
-    [(_, _, html, _)] = list(Crawler(BASE, delay=0).fetch_pages(10))
+    [(_, _, html, _, _)] = list(Crawler(BASE, delay=0).fetch_pages(10))
     assert "Kengät" in html
 
 

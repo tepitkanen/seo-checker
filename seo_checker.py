@@ -4,6 +4,7 @@ import argparse
 import csv
 import json
 import os
+import re
 import time
 import xml.etree.ElementTree as ET
 from collections import Counter
@@ -21,6 +22,8 @@ USER_AGENT = "Mozilla/5.0 (compatible; seo-checker/1.0)"
 TIMEOUT = 15
 TITLE_MIN, TITLE_MAX = 30, 60
 DESC_MIN, DESC_MAX = 70, 160
+SLOW_RESPONSE_MS = 1000  # time until the server's response arrived
+LARGE_PAGE_KB = 500      # size of the HTML itself, without images, CSS or scripts
 SITEMAP_PATHS = ("/sitemap_index.xml", "/sitemap.xml")
 # Links to these file types are not HTML pages, so they are not checked.
 NON_PAGE_EXTENSIONS = (".pdf", ".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".zip",
@@ -29,15 +32,19 @@ NON_PAGE_EXTENSIONS = (".pdf", ".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg",
 
 # ---------- Page checks (pure functions, no network) ----------
 
-def check_page(html, url, status=200, final_url=None):
+def check_page(html, url, status=200, final_url=None, info=None):
     """Analyse one page's HTML and return a dict of findings and a list of issues.
 
     final_url is the address after redirects; the canonical is compared against it.
+    info holds response details from Crawler.fetch_pages: x_robots_tag, response_ms, size_kb.
     """
+    info = info or {}
     result = {
         "url": url, "status": status, "title": "", "title_length": 0,
         "description_length": 0, "h1_count": 0, "images_missing_alt": 0,
-        "noindex": False, "canonical": "", "redirects_to": "", "schema_types": "", "issues": [],
+        "noindex": False, "canonical": "", "redirects_to": "", "schema_types": "",
+        "response_ms": info.get("response_ms", 0), "size_kb": info.get("size_kb", 0),
+        "broken_links": "", "issues": [],
     }
     issues = result["issues"]
     # A sitemap should list final addresses; a redirect wastes crawl budget and slows users.
@@ -48,6 +55,11 @@ def check_page(html, url, status=200, final_url=None):
     if status != 200:
         issues.append("Request failed" if status == 0 else f"HTTP {status}")
         return result
+
+    if result["response_ms"] > SLOW_RESPONSE_MS:
+        issues.append("Slow response")
+    if result["size_kb"] > LARGE_PAGE_KB:
+        issues.append("Large page")
 
     soup = BeautifulSoup(html, "html.parser")
 
@@ -84,6 +96,11 @@ def check_page(html, url, status=200, final_url=None):
     if "noindex" in get_attr(find_meta(soup, "robots"), "content").lower():
         result["noindex"] = True
         issues.append("Noindex")
+    # The same rule can be sent as an HTTP header, e.g. "X-Robots-Tag: noindex" or "googlebot: noindex".
+    # "none" means "noindex, nofollow".
+    if re.search(r"\b(noindex|none)\b", info.get("x_robots_tag", "").lower()):
+        result["noindex"] = True
+        issues.append("Noindex (X-Robots-Tag)")
 
     canonical_href = get_attr(soup.select_one('link[rel~="canonical"]'), "href")
     if canonical_href:
@@ -172,6 +189,16 @@ def site_host(url):
     return urlparse(url).netloc.lower().removeprefix("www.")
 
 
+def link_key(url):
+    """Key for matching the same page across http/https, www/non-www and a trailing slash.
+
+    link_key("http://www.example.fi/a/?x=1") == link_key("https://example.fi/a?x=1")
+    """
+    parts = urlparse(url)
+    key = site_host(url) + parts.path.rstrip("/")
+    return f"{key}?{parts.query}" if parts.query else key
+
+
 # ---------- Network ----------
 
 def decode_html(resp):
@@ -247,9 +274,10 @@ class Crawler:
         return pages
 
     def fetch_pages(self, max_pages):
-        """Yield (url, status, html, final_url) for each discovered page allowed by robots.txt.
+        """Yield (url, status, html, final_url, info) for each discovered page allowed by robots.txt.
 
         final_url is where redirects ended up (same as url if there were none).
+        info is a dict of response details for check_page (empty on network error).
         """
         for url in self.discover_urls(max_pages):
             if not self.allowed(url):
@@ -257,9 +285,19 @@ class Crawler:
                 continue
             resp = self.get(url)
             if resp is None:
-                yield url, 0, "", url
+                yield url, 0, "", url, {}
             else:
-                yield url, resp.status_code, decode_html(resp), resp.url or url
+                info = {
+                    "x_robots_tag": resp.headers.get("X-Robots-Tag", ""),
+                    "response_ms": round(resp.elapsed.total_seconds() * 1000),
+                    "size_kb": round(len(resp.content) / 1024),
+                }
+                yield url, resp.status_code, decode_html(resp), resp.url or url, info
+
+    def link_status(self, url):
+        """Return the HTTP status of a link (after redirects), or 0 on network error."""
+        resp = self.get(url)
+        return 0 if resp is None else resp.status_code
 
     def has_llms_txt(self):
         resp = self.get(self.base + "/llms.txt")
@@ -268,8 +306,37 @@ class Crawler:
 
 # ---------- Reporting ----------
 
+def find_broken_links(page_links, known_status, crawler, max_links):
+    """Check the internal links found on each page and return the broken ones.
+
+    page_links maps page URL -> list of its internal links. known_status maps URLs that were
+    already crawled to their status, so those are not requested again. At most max_links new
+    URLs are requested; links blocked by robots.txt are not checked.
+    Returns (broken, checked, capped): broken maps page URL -> list of broken links,
+    checked is the number of new requests made, capped is True if max_links stopped checking.
+    """
+    statuses = {link_key(u): s for u, s in known_status.items()}
+    broken, checked, capped = {}, 0, False
+    for page, links in page_links.items():
+        for link in links:
+            key = link_key(link)
+            if key not in statuses:
+                if not crawler.allowed(link):
+                    continue
+                if checked >= max_links:
+                    capped = True
+                    continue
+                statuses[key] = crawler.link_status(link)
+                checked += 1
+            status = statuses[key]
+            if status == 0 or status >= 400:
+                broken.setdefault(page, []).append(link)
+    return broken, checked, capped
+
+
 CSV_FIELDS = ["url", "status", "title", "title_length", "description_length", "h1_count",
-              "images_missing_alt", "noindex", "canonical", "redirects_to", "schema_types", "issues"]
+              "images_missing_alt", "noindex", "canonical", "redirects_to", "schema_types",
+              "response_ms", "size_kb", "broken_links", "issues"]
 
 
 CSV_DELIMITERS = {"comma": ",", "semicolon": ";"}
@@ -299,7 +366,8 @@ def write_xlsx(results, path):
     for cell in ws[1]:
         cell.font = Font(bold=True)
     for r in results:
-        row = [r[field] if field != "issues" else "; ".join(r["issues"]) for field in CSV_FIELDS]
+        # Missing fields become blank cells, like csv.DictWriter does for the CSV report.
+        row = [r.get(field, "") if field != "issues" else "; ".join(r["issues"]) for field in CSV_FIELDS]
         ws.append([excel_safe(value) for value in row])
         for cell in ws[ws.max_row]:
             # A crawled title like "=HYPERLINK(...)" must stay text, not become a live formula.
@@ -369,6 +437,10 @@ def main():
                         help="CSV column separator; use 'semicolon' for Finnish Excel (default comma)")
     parser.add_argument("--xlsx", help="Write an Excel report to this file")
     parser.add_argument("--delay", type=float, default=1.0, help="Seconds between requests (default 1)")
+    parser.add_argument("--check-links", action="store_true",
+                        help="Also check internal links on each page for broken targets (extra requests)")
+    parser.add_argument("--max-links", type=positive_int, default=100,
+                        help="Max extra link URLs to request with --check-links (default 100)")
     args = parser.parse_args()
     if not args.delay >= 0:  # time.sleep() would crash on a negative or NaN delay
         parser.error("--delay must be 0 or more")
@@ -385,11 +457,28 @@ def main():
 
     crawler = Crawler(args.url, args.delay)
     results = []
-    for url, status, html, final_url in crawler.fetch_pages(args.max):
+    page_links, known_status = {}, {}
+    broken, checked, capped = {}, 0, False
+    for url, status, html, final_url, info in crawler.fetch_pages(args.max):
         print(f"  [{status}] {url}")
-        results.append(check_page(html, url, status, final_url))
+        results.append(check_page(html, url, status, final_url, info))
+        known_status[url] = known_status[final_url] = status
+        if args.check_links and status == 200:
+            page_links[url] = internal_links(html, final_url)
+
+    if args.check_links:
+        broken, checked, capped = find_broken_links(page_links, known_status, crawler, args.max_links)
+        for r in results:
+            if r["url"] in broken:
+                r["broken_links"] = "; ".join(broken[r["url"]])
+                r["issues"].append("Broken internal links")
 
     print_summary(results, crawler.has_llms_txt())
+    if args.check_links:
+        total = sum(len(links) for links in broken.values())
+        print(f"Links: {checked} extra URLs requested, {total} broken links found")
+        if capped:
+            print(f"  (stopped at --max-links {args.max_links}; some links were not checked)")
     if args.csv:
         write_csv(results, args.csv, CSV_DELIMITERS[args.csv_delimiter])
         print(f"\nCSV report written to {args.csv}")

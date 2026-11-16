@@ -100,14 +100,15 @@ def test_redirect_issue_comes_before_page_issues():
 def test_fetch_pages_final_url_defaults_to_url_when_response_has_none(make_site):
     make_site({f"{BASE}/sitemap.xml": FakeResponse(sitemap(f"{BASE}/a")),
                f"{BASE}/a": FakeResponse("<html></html>", url="")})
-    [(url, _, _, final_url)] = list(Crawler(BASE, delay=0).fetch_pages(10))
+    [(url, _, _, final_url, _)] = list(Crawler(BASE, delay=0).fetch_pages(10))
     assert final_url == url
 
 
 def test_fetch_pages_redirect_to_404_keeps_error_status(make_site):
     make_site({f"{BASE}/sitemap.xml": FakeResponse(sitemap(f"{BASE}/a")),
                f"{BASE}/a": FakeResponse("", status=404, url=f"{BASE}/gone")})
-    assert list(Crawler(BASE, delay=0).fetch_pages(10)) == [(f"{BASE}/a", 404, "", f"{BASE}/gone")]
+    [page] = list(Crawler(BASE, delay=0).fetch_pages(10))
+    assert page[:4] == (f"{BASE}/a", 404, "", f"{BASE}/gone")
 
 
 # ---------- main() end to end ----------
