@@ -27,17 +27,29 @@ For each page:
 | Response time | Server response took over 1000 ms |
 | Page size | HTML over 500 KB (images, CSS and scripts not included) |
 | Broken internal links | With `--check-links`: links on the page to same-site URLs that return 4xx/5xx or fail |
+| Duplicate title / meta description | Another checked page has the same text (case and extra spaces ignored) |
 
-For the whole site, it checks whether `/llms.txt` exists. Structured data and `llms.txt` help
-AI answer engines (ChatGPT, Perplexity, Google AI Overviews) understand and cite a site.
+For the whole site, it checks:
+
+- whether `/llms.txt` exists;
+- which AI crawlers `robots.txt` blocks from the homepage: GPTBot and OAI-SearchBot (OpenAI),
+  ClaudeBot (Anthropic), PerplexityBot and Google-Extended (Gemini / AI Overviews).
+
+Structured data, `llms.txt` and allowing AI crawlers help AI answer engines (ChatGPT, Claude,
+Perplexity, Google AI Overviews) understand and cite a site.
 
 ## How it finds pages
 
-1. Reads `/sitemap_index.xml` or `/sitemap.xml` (generated automatically by Yoast and Rank Math
-   on WordPress sites) and follows sub-sitemaps.
-2. If there is no sitemap, it collects internal links from the homepage.
+1. Reads the sitemaps listed as `Sitemap:` lines in `robots.txt` (all of them).
+2. Without any, reads `/sitemap_index.xml` or `/sitemap.xml` (generated automatically by Yoast
+   and Rank Math on WordPress sites). Sub-sitemaps of a sitemap index are followed, and
+   gzipped sitemaps (`.xml.gz`) are unpacked.
+3. If there is no sitemap, it collects internal links from the homepage.
 
-It respects `robots.txt`, waits between requests (`--delay`, default 1 s) and stops at `--max` pages.
+Sitemaps that redirect to another host are skipped.
+
+It respects `robots.txt` (if it returns 401 or 403, a warning is printed and every page is
+treated as allowed, as Google does), waits between requests (`--delay`, default 1 s) and stops at `--max` pages.
 
 ## Install
 
@@ -82,6 +94,7 @@ $ python seo_checker.py https://wordpress.org --max 5 --csv report.csv
 Pages checked: 5
 Pages with issues: 5
 llms.txt: found
+AI crawlers blocked by robots.txt: none
 
 Issues by type:
      4  Meta description too long
@@ -93,9 +106,10 @@ CSV report written to report_2026-11-15_143012.csv
 
 A timestamp is added to report file names so earlier reports are never overwritten:
 `--csv report.csv` writes e.g. `report_2026-11-15_143012.csv`. `--csv` and `--xlsx` can be used
-together and share the same timestamp. The report has one row per page: URL, status, title and its length, description length, H1 count,
+together and share the same timestamp. The report has one row per page: URL, status, title and its length, meta description and its length, H1 count,
 images missing alt, noindex, canonical, redirect target, schema types, response time (ms), page size
-(KB), broken links and the list of issues.
+(KB), broken links and the list of issues. In the CSV, text starting with `=`, `+`, `-` or `@`
+gets a leading `'` so Excel shows it as text instead of running it as a formula.
 
 ## Tests
 
@@ -105,6 +119,16 @@ pytest
 
 The checks live in `check_page(html, url)`, which takes plain HTML and does no network calls,
 so the tests run offline against HTML samples.
+
+For an end-to-end run, `local_site.py` serves a local site where every page and sitemap has a
+deliberate problem (broken and gzipped sitemaps, off-site redirects, formula-like titles, ...).
+The expected result is noted next to each one in the file, and a page named `/must-not-appear-*`
+in the report means a check failed. It uses port 8765 and, as the "other host", 8766:
+
+```
+python local_site.py              # add --robots-status 403 to test a blocked robots.txt
+python seo_checker.py http://127.0.0.1:8765 --delay 0 --check-links --csv reports/local.csv
+```
 
 ## Possible next steps
 

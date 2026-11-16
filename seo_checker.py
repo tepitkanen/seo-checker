@@ -7,6 +7,7 @@ import os
 import re
 import time
 import xml.etree.ElementTree as ET
+import zlib
 from collections import Counter
 from urllib.parse import urljoin, urlparse, urldefrag
 from urllib.robotparser import RobotFileParser
@@ -25,6 +26,9 @@ DESC_MIN, DESC_MAX = 70, 160
 SLOW_RESPONSE_MS = 1000  # time until the server's response arrived
 LARGE_PAGE_KB = 500      # size of the HTML itself, without images, CSS or scripts
 SITEMAP_PATHS = ("/sitemap_index.xml", "/sitemap.xml")
+MAX_SITEMAP_BYTES = 50 * 1024 * 1024  # sitemaps.org limit for an uncompressed sitemap
+# robots.txt user agents of AI answer engines and training crawlers (GEO).
+AI_CRAWLERS = ("GPTBot", "OAI-SearchBot", "ClaudeBot", "PerplexityBot", "Google-Extended")
 # Links to these file types are not HTML pages, so they are not checked.
 NON_PAGE_EXTENSIONS = (".pdf", ".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".zip",
                        ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".mp3", ".mp4")
@@ -41,7 +45,7 @@ def check_page(html, url, status=200, final_url=None, info=None):
     info = info or {}
     result = {
         "url": url, "status": status, "title": "", "title_length": 0,
-        "description_length": 0, "h1_count": 0, "images_missing_alt": 0,
+        "description": "", "description_length": 0, "h1_count": 0, "images_missing_alt": 0,
         "noindex": False, "canonical": "", "redirects_to": "", "schema_types": "",
         "response_ms": info.get("response_ms", 0), "size_kb": info.get("size_kb", 0),
         "broken_links": "", "issues": [],
@@ -73,7 +77,7 @@ def check_page(html, url, status=200, final_url=None, info=None):
         issues.append("Title too long")
 
     desc = get_attr(find_meta(soup, "description"), "content")
-    result["description_length"] = len(desc)
+    result["description"], result["description_length"] = desc, len(desc)
     if not desc:
         issues.append("Missing meta description")
     elif len(desc) < DESC_MIN:
@@ -219,6 +223,34 @@ def decode_html(resp):
     return dammit.unicode_markup or ""
 
 
+def sitemap_text(resp):
+    """Return a sitemap response as text, unpacking gzipped files such as sitemap.xml.gz.
+
+    requests only unpacks gzip sent as Content-Encoding; a .gz file arrives as raw bytes.
+    """
+    if resp.content[:2] == b"\x1f\x8b":  # gzip magic number
+        try:
+            return _gunzip_capped(resp.content, MAX_SITEMAP_BYTES).decode("utf-8", errors="replace")
+        except (EOFError, zlib.error, ValueError):
+            # broken or oversized archive: parse_sitemap raises ParseError and it is skipped
+            return ""
+    return resp.text
+
+
+def _gunzip_capped(data, limit):
+    """Unpack gzip data like gzip.decompress, but raise ValueError past limit bytes (gzip bombs)."""
+    out = bytearray()
+    while data:  # a .gz file may hold several members back to back
+        d = zlib.decompressobj(16 + zlib.MAX_WBITS)
+        out += d.decompress(data, limit + 1 - len(out))
+        if len(out) > limit:
+            raise ValueError("gzip data exceeds size limit")
+        if not d.eof:
+            raise EOFError("truncated gzip data")
+        data = d.unused_data.lstrip(b"\x00")  # gzip.decompress also ignores zero padding
+    return bytes(out)
+
+
 class Crawler:
     def __init__(self, base_url, delay=1.0):
         self.base = base_url.rstrip("/")
@@ -227,6 +259,9 @@ class Crawler:
         self.session.headers["User-Agent"] = USER_AGENT
         self.robots = RobotFileParser()
         resp = self.get(self.base + "/robots.txt")
+        if resp is not None and resp.status_code in (401, 403):
+            # Like Google, treat it as no robots.txt; Python's RobotFileParser.read() would block all.
+            print(f"  warning: robots.txt returned {resp.status_code}; treating every page as allowed")
         self.robots.parse(resp.text.splitlines() if resp is not None and resp.ok else [])
 
     def get(self, url):
@@ -240,16 +275,27 @@ class Crawler:
     def allowed(self, url):
         return self.robots.can_fetch(USER_AGENT, url)
 
+    def robots_sitemaps(self):
+        """Return same-site sitemap URLs listed as 'Sitemap:' lines in robots.txt."""
+        listed = self.robots.site_maps() or []
+        return [u for u in dict.fromkeys(listed) if self._same_site(u)]
+
     def discover_urls(self, max_pages):
-        """Find page URLs from the sitemap, falling back to homepage links."""
+        """Find page URLs from the sitemap, falling back to homepage links.
+
+        Sitemaps listed in robots.txt are used first (all of them, since sites often list
+        several); without any, the usual /sitemap_index.xml and /sitemap.xml are tried.
+        """
+        urls = []
+        for sitemap_url in self.robots_sitemaps():
+            if len(urls) >= max_pages:
+                break
+            # dict.fromkeys drops URLs listed more than once, keeping the first position.
+            urls = list(dict.fromkeys(urls + self._read_sitemap(sitemap_url, max_pages - len(urls))))
+        if urls:
+            return urls[:max_pages]
         for path in SITEMAP_PATHS:
-            resp = self.get(self.base + path)
-            if resp is None or not resp.ok:
-                continue
-            try:
-                urls = self._expand_sitemap(resp.text, max_pages)
-            except ET.ParseError:
-                continue
+            urls = list(dict.fromkeys(self._read_sitemap(self.base + path, max_pages)))
             if urls:
                 return urls[:max_pages]
         resp = self.get(self.base + "/")
@@ -265,6 +311,23 @@ class Crawler:
     def _same_site(self, url):
         return site_host(url) == site_host(self.base)
 
+    def _get_sitemap(self, url):
+        """GET a sitemap; return None on failure or if a redirect left the site being checked."""
+        resp = self.get(url)
+        if resp is None or not resp.ok or (resp.url and not self._same_site(resp.url)):
+            return None
+        return resp
+
+    def _read_sitemap(self, sitemap_url, max_pages):
+        """Fetch one sitemap (or sitemap index) and return its page URLs; [] if it fails."""
+        resp = self._get_sitemap(sitemap_url)
+        if resp is None:
+            return []
+        try:
+            return self._expand_sitemap(sitemap_text(resp), max_pages)
+        except ET.ParseError:
+            return []
+
     def _expand_sitemap(self, xml_text, max_pages):
         urls, is_index = parse_sitemap(xml_text)
         # Only follow URLs on the site being checked, never other hosts listed in a sitemap.
@@ -275,11 +338,11 @@ class Crawler:
         for child in urls:
             if len(pages) >= max_pages:
                 break
-            resp = self.get(child)
-            if resp is None or not resp.ok:
+            resp = self._get_sitemap(child)
+            if resp is None:
                 continue
             try:
-                pages += [u for u in parse_sitemap(resp.text)[0] if self._same_site(u)]
+                pages += [u for u in parse_sitemap(sitemap_text(resp))[0] if self._same_site(u)]
             except ET.ParseError:  # skip one broken sub-sitemap instead of losing all pages
                 continue
         return pages
@@ -309,6 +372,10 @@ class Crawler:
         """Return the HTTP status of a link (after redirects), or 0 on network error."""
         resp = self.get(url)
         return 0 if resp is None else resp.status_code
+
+    def blocked_ai_crawlers(self):
+        """Return the AI crawlers that robots.txt does not allow to fetch the homepage."""
+        return [bot for bot in AI_CRAWLERS if not self.robots.can_fetch(bot, self.base + "/")]
 
     def has_llms_txt(self):
         resp = self.get(self.base + "/llms.txt")
@@ -345,7 +412,27 @@ def find_broken_links(page_links, known_status, crawler, max_links):
     return broken, checked, capped
 
 
-CSV_FIELDS = ["url", "status", "title", "title_length", "description_length", "h1_count",
+def mark_duplicates(results):
+    """Add "Duplicate title" / "Duplicate meta description" to pages that share one.
+
+    Comparison ignores case and surrounding whitespace. Two sitemap URLs that redirect to the
+    same page are one page, not duplicates. Empty values are skipped (already "Missing ...").
+    """
+    for field, issue in (("title", "Duplicate title"), ("description", "Duplicate meta description")):
+        pages = {}  # normalized value -> {page key: [results]}
+        for r in results:
+            value = " ".join(r.get(field, "").split()).casefold()
+            if value:
+                page = link_key(r.get("redirects_to") or r["url"])
+                pages.setdefault(value, {}).setdefault(page, []).append(r)
+        for same_value in pages.values():
+            if len(same_value) > 1:
+                for group in same_value.values():
+                    for r in group:
+                        r["issues"].append(issue)
+
+
+CSV_FIELDS = ["url", "status", "title", "title_length", "description", "description_length", "h1_count",
               "images_missing_alt", "noindex", "canonical", "redirects_to", "schema_types",
               "response_ms", "size_kb", "broken_links", "issues"]
 
@@ -360,7 +447,15 @@ def write_csv(results, path, delimiter=","):
         writer = csv.DictWriter(f, fieldnames=CSV_FIELDS, delimiter=delimiter)
         writer.writeheader()
         for r in results:
-            writer.writerow({**r, "issues": "; ".join(r["issues"])})
+            row = {**r, "issues": "; ".join(r["issues"])}
+            writer.writerow({k: csv_safe(v) for k, v in row.items()})
+
+
+def csv_safe(value):
+    """Prefix ' to text that Excel would run as a formula, e.g. a crawled title "=HYPERLINK(...)"."""
+    if isinstance(value, str) and value.startswith(("=", "+", "-", "@", "\t", "\r")):
+        return "'" + value
+    return value
 
 
 def excel_safe(value):
@@ -391,11 +486,14 @@ def write_xlsx(results, path):
     wb.save(path)
 
 
-def print_summary(results, llms_txt):
+def print_summary(results, llms_txt, blocked_ai=None):
+    """Print totals and issue counts; blocked_ai is the list from Crawler.blocked_ai_crawlers."""
     counts = Counter(issue for r in results for issue in r["issues"])
     print(f"\nPages checked: {len(results)}")
     print(f"Pages with issues: {sum(1 for r in results if r['issues'])}")
     print(f"llms.txt: {'found' if llms_txt else 'missing'}")
+    if blocked_ai is not None:
+        print(f"AI crawlers blocked by robots.txt: {', '.join(blocked_ai) if blocked_ai else 'none'}")
     if counts:
         print("\nIssues by type:")
         for issue, n in counts.most_common():
@@ -476,6 +574,7 @@ def main():
         known_status[url] = known_status[final_url] = status
         if args.check_links and status == 200:
             page_links[url] = internal_links(html, final_url)
+    mark_duplicates(results)
 
     if args.check_links:
         broken, checked, capped = find_broken_links(page_links, known_status, crawler, args.max_links)
@@ -484,7 +583,7 @@ def main():
                 r["broken_links"] = "; ".join(broken[r["url"]])
                 r["issues"].append("Broken internal links")
 
-    print_summary(results, crawler.has_llms_txt())
+    print_summary(results, crawler.has_llms_txt(), crawler.blocked_ai_crawlers())
     if args.check_links:
         total = sum(len(links) for links in broken.values())
         print(f"Links: {checked} extra URLs requested, {total} broken links found")
