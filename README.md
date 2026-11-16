@@ -111,6 +111,16 @@ images missing alt, noindex, canonical, redirect target, schema types, response 
 (KB), broken links and the list of issues. In the CSV, text starting with `=`, `+`, `-` or `@`
 gets a leading `'` so Excel shows it as text instead of running it as a formula.
 
+## Code layout
+
+| File | Contents |
+|---|---|
+| `seo_checker.py` | Command-line entry point (`main`) |
+| `checker/pages.py` | Page checks on HTML, no network (`check_page`, duplicates) |
+| `checker/crawl.py` | Fetching: robots.txt, sitemaps, pages, link checks (`Crawler`) |
+| `checker/report.py` | CSV and Excel reports and the printed summary |
+| `checker/urls.py` | URL helpers for matching the same page across URL variants |
+
 ## Tests
 
 ```
