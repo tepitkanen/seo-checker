@@ -9,7 +9,7 @@ from openpyxl.styles import Font
 from openpyxl.utils import get_column_letter
 
 CSV_FIELDS = ["url", "status", "title", "title_length", "description", "description_length", "h1_count",
-              "images_missing_alt", "noindex", "canonical", "redirects_to", "schema_types",
+              "images_missing_alt", "images_empty_alt", "noindex", "canonical", "redirects_to", "schema_types",
               "response_ms", "size_kb", "broken_links", "issues"]
 
 

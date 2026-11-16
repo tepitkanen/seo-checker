@@ -24,7 +24,7 @@ def check_page(html, url, status=200, final_url=None, info=None):
     result = {
         "url": url, "status": status, "title": "", "title_length": 0,
         "description": "", "description_length": 0, "h1_count": 0, "images_missing_alt": 0,
-        "noindex": False, "canonical": "", "redirects_to": "", "schema_types": "",
+        "images_empty_alt": 0, "noindex": False, "canonical": "", "redirects_to": "", "schema_types": "",
         "response_ms": info.get("response_ms", 0), "size_kb": info.get("size_kb", 0),
         "broken_links": "", "issues": [],
     }
@@ -70,10 +70,16 @@ def check_page(html, url, status=200, final_url=None, info=None):
     elif h1_count > 1:
         issues.append("Multiple H1")
 
-    missing_alt = sum(1 for img in soup.select("img") if not get_attr(img, "alt"))
-    result["images_missing_alt"] = missing_alt
+    # No alt attribute at all is an error. alt="" is correct for decorative images, but WordPress
+    # also writes it when nobody filled in the alt text, so it is a softer issue to review.
+    images = soup.select("img")
+    missing_alt = sum(1 for img in images if img.get("alt") is None)
+    empty_alt = sum(1 for img in images if img.get("alt") is not None and not get_attr(img, "alt"))
+    result["images_missing_alt"], result["images_empty_alt"] = missing_alt, empty_alt
     if missing_alt:
         issues.append("Images missing alt")
+    if empty_alt:
+        issues.append("Images with empty alt")
 
     if "noindex" in get_attr(find_meta(soup, "robots"), "content").lower():
         result["noindex"] = True

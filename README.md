@@ -19,7 +19,8 @@ For each page:
 | `<title>` | Missing, under 30 or over 60 characters |
 | Meta description | Missing, under 70 or over 160 characters |
 | H1 | Missing, or more than one |
-| Images | `<img>` without `alt` text (count) |
+| Images missing alt | `<img>` with no `alt` attribute at all (count) |
+| Images with empty alt | `<img>` with `alt=""`: correct for decorative images, but WordPress also writes it when nobody filled in the alt text, so check these by eye (count) |
 | Robots meta | `noindex` |
 | `X-Robots-Tag` header | `noindex` or `none` sent as an HTTP header (e.g. `noindex` or `googlebot: noindex`) |
 | Canonical | Missing, or points to another URL |
@@ -46,7 +47,8 @@ Perplexity, Google AI Overviews) understand and cite a site.
    gzipped sitemaps (`.xml.gz`) are unpacked.
 3. If there is no sitemap, it collects internal links from the homepage.
 
-Sitemaps that redirect to another host are skipped.
+Sitemaps that redirect to another host, or that contain a `<!DOCTYPE` or `<!ENTITY` (never
+needed in a sitemap, and used in XML attacks), are skipped. Any download over 50 MB is stopped.
 
 It respects `robots.txt` (if it returns 401 or 403, a warning is printed and every page is
 treated as allowed, as Google does), waits between requests (`--delay`, default 1 s) and stops at `--max` pages.

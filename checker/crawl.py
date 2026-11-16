@@ -1,5 +1,6 @@
 """Network: fetching pages politely, robots.txt, sitemaps and link checks."""
 
+import re
 import time
 import xml.etree.ElementTree as ET
 import zlib
@@ -9,18 +10,27 @@ import requests
 from bs4 import UnicodeDammit
 
 from checker.pages import internal_links
-from checker.urls import link_key, site_host
+from checker.urls import link_key, printable, site_host
 
 USER_AGENT = "Mozilla/5.0 (compatible; seo-checker/1.0)"
 TIMEOUT = 15
 SITEMAP_PATHS = ("/sitemap_index.xml", "/sitemap.xml")
 MAX_SITEMAP_BYTES = 50 * 1024 * 1024  # sitemaps.org limit for an uncompressed sitemap
+# Any download stops here, so a huge or endless response can't exhaust memory.
+MAX_RESPONSE_BYTES = 50 * 1024 * 1024
+DTD_RE = re.compile(r"<!\s*(DOCTYPE|ENTITY)", re.IGNORECASE)
 # robots.txt user agents of AI answer engines and training crawlers (GEO).
 AI_CRAWLERS = ("GPTBot", "OAI-SearchBot", "ClaudeBot", "PerplexityBot", "Google-Extended")
 
 
 def parse_sitemap(xml_text):
-    """Return (urls, is_index) from sitemap XML; is_index is True for a sitemap index."""
+    """Return (urls, is_index) from sitemap XML; is_index is True for a sitemap index.
+
+    Raises ET.ParseError on invalid XML, and on any DOCTYPE or ENTITY: real sitemaps never
+    need them, and refusing them blocks entity-expansion attacks such as "billion laughs".
+    """
+    if DTD_RE.search(xml_text):
+        raise ET.ParseError("DOCTYPE/ENTITY declarations are not allowed in a sitemap")
     root = ET.fromstring(xml_text)
     urls = []
     # Only the direct <loc> of each <url>/<sitemap>; skips nested ones like <image:loc>.
@@ -86,11 +96,24 @@ class Crawler:
         self.robots.parse(resp.text.splitlines() if resp is not None and resp.ok else [])
 
     def get(self, url):
-        """GET a URL politely; return the response or None on network error."""
+        """GET a URL politely; return the response, or None on network error or over MAX_RESPONSE_BYTES."""
         time.sleep(self.delay)
+        resp = None
         try:
-            return self.session.get(url, timeout=TIMEOUT)
+            resp = self.session.get(url, timeout=TIMEOUT, stream=True)
+            body = bytearray()
+            # iter_content unpacks Content-Encoding: gzip, so the cap also stops compression bombs.
+            for chunk in resp.iter_content(64 * 1024):
+                body += chunk
+                if len(body) > MAX_RESPONSE_BYTES:
+                    resp.close()
+                    print(f"  skipped (over {MAX_RESPONSE_BYTES // (1024 * 1024)} MB): {printable(url)}")
+                    return None
+            resp._content = bytes(body)  # what resp.content and resp.text read
+            return resp
         except requests.RequestException:
+            if resp is not None:
+                resp.close()  # a failed download must not keep its connection checked out
             return None
 
     def allowed(self, url):
@@ -179,7 +202,7 @@ class Crawler:
         """
         for url in self.discover_urls(max_pages):
             if not self.allowed(url):
-                print(f"  skipped (robots.txt): {url}")
+                print(f"  skipped (robots.txt): {printable(url)}")
                 continue
             resp = self.get(url)
             if resp is None:
